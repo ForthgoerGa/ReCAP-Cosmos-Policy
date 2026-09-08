@@ -42,6 +42,8 @@ Usage:
 """
 
 import os
+import json
+import hashlib
 import sys
 import time
 import traceback
@@ -74,6 +76,7 @@ from cosmos_policy.experiments.robot.robot_utils import (
 )
 from cosmos_policy.utils.utils import set_seed_everywhere
 
+from .retrievers.config import RetrievalError
 from .retrieval import PushTRetrieval, resolve_retrieval_split
 from .retrieval_consistent import PushTConsistentRetrieval
 from .retrieval_cumulative import PushTCumulativeRetrieval
@@ -221,6 +224,9 @@ class PolicyEvalConfig:
     retrieval_pool_k: int = 2                        # K nearest rot pools when goal_angle is set
     retrieval_pool_pattern: str = "plain"            # "plain" | "flipcolor" | "both"
     retrieval_strategy: str = "standard"  # "standard", "consistent", or "cumulative"
+    retrieval_config: str = ""  # YAML for optional retrieval backend
+    retrieval_trace: bool = False
+    fail_on_episode_error: bool = False
     ret_top_n: int = 3               # consistent/cumulative: number of diverse tracks
     ret_dist_threshold: float = 0.3  # consistent: re-retrieve when dist² > this
     ret_gamma: float = 0.95          # cumulative: EMA decay
@@ -242,6 +248,10 @@ class PolicyEvalConfig:
 
 
 def validate_config(cfg: PolicyEvalConfig) -> None:
+    if cfg.retrieval_strategy not in ("standard", "consistent", "cumulative", "qwen_rerank"):
+        raise ValueError(f"Unknown retrieval strategy: {cfg.retrieval_strategy}")
+    if cfg.retrieval_strategy == "qwen_rerank" and not cfg.retrieval_config:
+        raise ValueError("Qwen retrieval requires retrieval_config")
     assert cfg.visual_config in VISUAL_CONFIGS, (
         f"Unknown visual_config '{cfg.visual_config}'. "
         f"Choose from: {list(VISUAL_CONFIGS.keys())}"
@@ -391,13 +401,23 @@ def run_episode(
                 bph = np.array(block_pos_history) if len(block_pos_history) >= 2 else None
                 aph = np.array(agent_pos_history) if len(agent_pos_history) >= 2 else None
 
+                retrieval_started = time.perf_counter()
+                extra = {"primary_image": frame} if cfg.retrieval_strategy == "qwen_rerank" else {}
                 ret_frames, ret_actions, ret_proprio = retrieval.get_retrieved_data(
                     agent_pos=agent_pos,
                     block_pos=block_pos,
                     block_angle=block_angle,
                     block_pos_history=bph,
                     agent_pos_history=aph,
+                    **extra,
                 )
+                if cfg.retrieval_trace:
+                    record = dict(retrieval.last_result or {})
+                    record.update(episode=episode_idx, seed=cfg.seed + episode_idx, step=t,
+                                  total_retrieval_seconds=time.perf_counter() - retrieval_started,
+                                  frame_sha256=hashlib.sha256(ret_frames.tobytes()).hexdigest(),
+                                  retrieved_actions=ret_actions.tolist(),
+                                  retrieved_proprio=ret_proprio.tolist())
                 observation["retrieved_frames"]  = ret_frames
                 observation["retrieved_actions"] = ret_actions
                 observation["retrieved_proprio"] = ret_proprio
@@ -432,6 +452,11 @@ def run_episode(
                     raw_actions = raw_delta + ret_actions[:len(raw_delta)]
                     action_return_dict["actions"] = [raw_actions[i] for i in range(len(raw_actions))]
 
+                if cfg.retrieval_trace:
+                    record["final_actions"] = np.asarray(action_return_dict["actions"][:cfg.num_open_loop_steps]).tolist()
+                    with open(os.path.join(cfg.local_log_dir, "retrieval_trace.jsonl"), "a") as trace:
+                        trace.write(json.dumps(record) + "\n")
+
                 for a in action_return_dict["actions"][: cfg.num_open_loop_steps]:
                     action_queue.append(a)
 
@@ -451,7 +476,11 @@ def run_episode(
                 success = True
                 break
 
+    except RetrievalError:
+        raise
     except Exception as e:
+        if cfg.fail_on_episode_error:
+            raise
         log_message(f"Episode error: {e}\n{traceback.format_exc()}", log_file)
 
     return (success, coverage, replay_frames, future_image_predictions_list,
@@ -507,7 +536,16 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
         pool_pattern=cfg.retrieval_pool_pattern,
     )
     log_message(f"Retrieval: strategy='{cfg.retrieval_strategy}', split='{retrieval_split}'", log_file)
-    if cfg.retrieval_strategy == "consistent":
+    if cfg.retrieval_strategy == "qwen_rerank":
+        from .retrievers.qwen_rerank import QwenRerankRetrieval
+        retrieval = QwenRerankRetrieval(
+            data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size,
+            split=retrieval_split, block_rel=cfg.block_rel,
+            ret_context_multiplier=cfg.ret_context_multiplier,
+            ret_image_subsample=cfg.ret_image_subsample,
+            retrieval_config=cfg.retrieval_config,
+        )
+    elif cfg.retrieval_strategy == "consistent":
         retrieval = PushTConsistentRetrieval(
             data_dir=cfg.retrieval_data_dir,
             chunk_size=cfg.chunk_size,
@@ -556,6 +594,11 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
             delta_stats=delta_stats,
         )
         elapsed = time.time() - t0
+        if cfg.retrieval_trace:
+            with open(os.path.join(cfg.local_log_dir, "episodes.jsonl"), "a") as metrics:
+                metrics.write(json.dumps(dict(seed=cfg.seed + episode_idx,
+                    success=success, terminal_coverage=float(coverage),
+                    steps=len(replay_frames), elapsed_seconds=elapsed)) + "\n")
 
         if success:
             total_successes += 1
@@ -611,6 +654,8 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
         f"Average coverage: {final_cov * 100:.1f}%",
         log_file,
     )
+    if hasattr(retrieval, "close"):
+        retrieval.close()
     env.close()
 
 

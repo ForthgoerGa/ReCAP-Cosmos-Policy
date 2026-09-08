@@ -1,0 +1,11 @@
+strategy: qwen_rerank
+model_path: ${QWEN_MODEL_PATH}
+model_revision: ${QWEN_MODEL_REVISION}
+worker_python: ${QWEN_PYTHON}
+index_path: ${QWEN_INDEX_PATH}
+candidate_k: 32
+image_size: 224
+embedding_dim: 2048
+batch_size: 8
+timeout_seconds: 300
+instruction: Represent the spatial configuration of the pusher, T-shaped block, and target region for matching PushT demonstrations.

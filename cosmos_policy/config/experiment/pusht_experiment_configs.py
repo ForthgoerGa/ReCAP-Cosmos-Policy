@@ -799,9 +799,7 @@ cosmos_predict2p5_2b_480p_pusht_no_pred_distilled = LazyDict(
     dict(
         defaults=["/experiment/cosmos_predict2p5_2b_480p_pusht_no_pred", "_self_"],
         checkpoint=dict(
-            load_path=get_checkpoint_path(
-                "hf://nvidia/Cosmos-Predict2.5-2B/base/distilled/575edf0f-d973-4c74-b52c-69929a08d0a5_ema_bf16.pt"
-            ),
+            load_path="hf://nvidia/Cosmos-Predict2.5-2B/base/distilled/575edf0f-d973-4c74-b52c-69929a08d0a5_ema_bf16.pt",
         ),
         job=dict(group="cosmos_v2_finetune", name="cosmos_predict2p5_2b_480p_pusht_no_pred_distilled"),
     )
@@ -812,9 +810,7 @@ cosmos_predict2p5_2b_480p_pusht_distilled = LazyDict(
     dict(
         defaults=["/experiment/cosmos_predict2p5_2b_480p_pusht", "_self_"],
         checkpoint=dict(
-            load_path=get_checkpoint_path(
-                "hf://nvidia/Cosmos-Predict2.5-2B/base/distilled/575edf0f-d973-4c74-b52c-69929a08d0a5_ema_bf16.pt"
-            ),
+            load_path="hf://nvidia/Cosmos-Predict2.5-2B/base/distilled/575edf0f-d973-4c74-b52c-69929a08d0a5_ema_bf16.pt",
         ),
         job=dict(group="cosmos_v2_finetune", name="cosmos_predict2p5_2b_480p_pusht_distilled"),
     )

@@ -27,16 +27,15 @@ GT states format: [agent_x, agent_y, block_x, block_y, block_angle]
   - Positions in sim coordinates (0-512)
   - Angle in radians
 
-Three-stage retrieval:
-  Stage 1: filter to N_DEMO_FILTER demos by initial block position L2.
-  Stage 2: hard position gate on end-of-window block position.
-  Stage 3: rank by 10-dim state feature L2.
+Retrieval: filter to N_DEMO_FILTER demos by initial block position L2,
+then rank by 10-dim state feature L2. The legacy position-gate constants
+are not used by the standard strategy.
 
 Feature (10 dims):
   block position (x, y)        : end-of-window x W_BLOCK_POS      2 dims
   agent position (x, y)        : end-of-window x W_AGENT_POS      2 dims
     --block_rel 사용 시: block 좌표계 기준 상대 좌표 (translate + rotate by -yaw)
-  block angle (sin2t, cos2t)   : end-of-window x W_YAW            2 dims
+  block angle (sin(t), cos(t))   : end-of-window x W_YAW            2 dims
   block velocity (dx, dy)      : mean finite diff x W_BLOCK_VEL   2 dims
   agent velocity (dx, dy)      : mean finite diff x W_AGENT_VEL   2 dims
 
@@ -244,6 +243,8 @@ class PushTRetrieval:
         mode = "block-relative" if block_rel else "absolute"
         print(f"Loading retrieval pool from GT states (split={self.split}, agent_pos: {mode}, "
               f"ctx_mult={ret_context_multiplier}, img_subsample={ret_image_subsample}) ...")
+        self.data_dir = os.path.abspath(data_dir)
+        self.last_result = None
         self._load_pool(data_dir)
 
     # ── Pool loading ─────────────────────────────────────────────────────────
@@ -302,6 +303,7 @@ class PushTRetrieval:
 
         subframes = []
         self._base_data: dict = {}
+        self._source_files = {}
 
         for file in sorted(hdf5_files):
             suite = os.path.relpath(file, data_dir).split(os.sep)[0]
@@ -314,6 +316,9 @@ class PushTRetrieval:
                     imgs = decode_jpeg_bytes_dataset(grp["obs/images"])
                     acts = grp["actions"][:].astype(np.float32)
                     prop = grp["obs/states"][:][:, :2].astype(np.float32)
+                    if (suite, demo_key) in self._base_data:
+                        raise ValueError(f"Duplicate demo identity: {suite}/{demo_key}")
+                    self._source_files[(suite, demo_key)] = os.path.relpath(file, data_dir)
                     self._base_data[(suite, demo_key)] = {"images": imgs, "actions": acts, "proprio": prop}
 
                     # Load GT states: [agent_x, agent_y, block_x, block_y, block_angle]
@@ -393,17 +398,18 @@ class PushTRetrieval:
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
 
-    def get_retrieved_data(
+    def get_state_candidates(
         self,
         agent_pos: np.ndarray,
         block_pos: np.ndarray,
         block_angle: float,
         block_pos_history: np.ndarray | None = None,
         agent_pos_history: np.ndarray | None = None,
+        k: int = 1,
     ) -> tuple:
         """
-        3-stage retrieval using 10-dim state feature from gt pose.
-        Returns (ret_frames, ret_actions, ret_proprio).
+        Return pool indices and squared state distances, ordered best first.
+        Uses the original initial-position demo filter and weighted GT features.
 
         agent_pos, block_pos: raw sim coordinates (x, y), range ~0-512.
         block_angle: raw physics angle (radians).
@@ -411,7 +417,6 @@ class PushTRetrieval:
         agent_pos_history: (T, 2) recent agent positions (x, y), for velocity.
         """
         S = self.SIM_SCALE
-        print(block_pos, agent_pos, block_angle)
         block_x = float(block_pos[0]) / S
         block_y = float(block_pos[1]) / S
         agent_x = float(agent_pos[0]) / S
@@ -466,9 +471,31 @@ class PushTRetrieval:
 
         # Stage 3: 10-dim feature L2
         dists  = ((self._feat[sub_idx] - q_feat) ** 2).sum(axis=1)
-        best_i = int(sub_idx[np.argmin(dists)])
-        sf     = self._subframes[best_i]
-        key    = (sf["split"], sf["demo"])
+        if k < 1 or len(sub_idx) == 0:
+            raise ValueError("Need a positive K and nonempty retrieval pool")
+        # Stable sort preserves the original argmin tie behavior.
+        order = np.argsort(dists, kind="stable")[:k]
+        return sub_idx[order], dists[order]
+
+    def candidate_id(self, index):
+        sf = self._subframes[int(index)]
+        return f'{self._source_files[(sf["split"], sf["demo"])]}::{sf["demo"]}::{sf["t_last"]}'
+
+    def get_retrieved_data(self, agent_pos, block_pos, block_angle,
+                           block_pos_history=None, agent_pos_history=None):
+        indices, distances = self.get_state_candidates(
+            agent_pos, block_pos, block_angle, block_pos_history, agent_pos_history)
+        self.last_result = {
+            "strategy": "standard", "selected_id": self.candidate_id(indices[0]),
+            "selected_state_rank": 1, "candidate_ids": [self.candidate_id(indices[0])],
+            "state_distances": distances.tolist(),
+        }
+        return self.get_candidate_data(indices[0])
+
+    def get_candidate_data(self, index):
+        """Materialize original aligned RGB/action/proprio payload in raw units."""
+        sf = self._subframes[int(index)]
+        key = (sf["split"], sf["demo"])
 
         # Context window parameters
         ctx_mult = self.ret_context_multiplier
