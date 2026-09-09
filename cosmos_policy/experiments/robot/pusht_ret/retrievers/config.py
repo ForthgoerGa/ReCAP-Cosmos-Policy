@@ -30,7 +30,7 @@ class RetrievalConfig:
     instruction: str = "Represent the spatial configuration of the pusher, T-shaped block, and target region for matching PushT demonstrations."
 
     def validate(self):
-        if self.strategy not in ("standard", "qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion"):
+        if self.strategy not in ("standard", "qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion"):
             raise ValueError(f"Unsupported strategy: {self.strategy}")
         if not all(math.isfinite(x) for x in (self.alpha, self.beta, self.history_weight_power)) or self.alpha < 0 or self.beta < 0 or self.alpha + self.beta <= 0:
             raise ValueError("alpha and beta must be nonnegative with positive sum")
@@ -38,11 +38,11 @@ class RetrievalConfig:
             raise ValueError("history settings must be positive")
         if self.candidate_k < 1 or self.batch_size < 1 or self.timeout_seconds <= 0:
             raise ValueError("K, batch size and timeout must be positive")
-        if self.strategy in ("qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion") and self.candidate_k != 1:
+        if self.strategy in ("qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion") and self.candidate_k != 1:
             raise ValueError("qwen_full searches the entire index and returns top-1; candidate_k must be 1")
         if self.image_size != 224 or self.embedding_dim != 2048:
             raise ValueError("v1 uses 224px images and complete 2048-dim 2B embeddings")
-        if self.strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion"):
+        if self.strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion"):
             for field in ("model_path", "model_revision", "worker_python", "index_path"):
                 if not getattr(self, field):
                     raise ValueError(f"Missing {field}")
@@ -59,6 +59,8 @@ class RetrievalConfig:
 
         if self.strategy in ("qwen_state_text", "qwen_history_state"):
             signature.update(modality="image_text", adapter_version=2, state_format="pusht_normalized_state10_v1")
+        if self.strategy == "qwen_video":
+            signature.update(modality="video", adapter_version=1, video_window=8, video_stride=1)
         return signature
 
     def to_dict(self):

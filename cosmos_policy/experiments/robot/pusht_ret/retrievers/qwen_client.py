@@ -94,6 +94,58 @@ class QwenClient:
         except Exception as e:
             raise RetrievalError(f"Embedding IPC failed: {e}") from e
 
+    def encode_video(self, videos):
+        started = time.perf_counter()
+        try:
+            encoded = []
+            for frames in videos:
+                clip = []
+                for frame in frames:
+                    if frame.dtype != np.uint8 or frame.ndim != 3 or frame.shape[-1] != 3:
+                        raise ValueError("Expected uint8 RGB")
+                    buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG")
+                    clip.append(base64.b64encode(buf.getvalue()).decode())
+                encoded.append(clip)
+            self.counter += 1
+            self.process.stdin.write(json.dumps({"id": self.counter, "videos": encoded}) + "\n")
+            self.process.stdin.flush()
+            result = self._receive()
+            values = np.asarray(result["embeddings"], dtype=np.float32)
+            if result["id"] != self.counter or values.shape != (len(videos), self.cfg.embedding_dim):
+                raise ValueError("Worker response mismatch")
+            if not np.isfinite(values).all() or not np.allclose(np.linalg.norm(values, axis=1), 1, atol=1e-5):
+                raise ValueError("Invalid normalized embeddings")
+            result.pop("embeddings"); result["roundtrip_seconds"] = time.perf_counter() - started
+            return values, result
+        except RetrievalError: raise
+        except Exception as e: raise RetrievalError(f"Video embedding IPC failed: {e}") from e
+
+    def encode_video(self, videos):
+        started = time.perf_counter()
+        try:
+            encoded = []
+            for frames in videos:
+                clip = []
+                for frame in frames:
+                    if frame.dtype != np.uint8 or frame.ndim != 3 or frame.shape[-1] != 3:
+                        raise ValueError("Expected uint8 RGB")
+                    buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG")
+                    clip.append(base64.b64encode(buf.getvalue()).decode())
+                encoded.append(clip)
+            self.counter += 1
+            self.process.stdin.write(json.dumps({"id": self.counter, "videos": encoded}) + "\n")
+            self.process.stdin.flush()
+            result = self._receive()
+            values = np.asarray(result["embeddings"], dtype=np.float32)
+            if result["id"] != self.counter or values.shape != (len(videos), self.cfg.embedding_dim):
+                raise ValueError("Worker response mismatch")
+            if not np.isfinite(values).all() or not np.allclose(np.linalg.norm(values, axis=1), 1, atol=1e-5):
+                raise ValueError("Invalid normalized embeddings")
+            result.pop("embeddings"); result["roundtrip_seconds"] = time.perf_counter() - started
+            return values, result
+        except RetrievalError: raise
+        except Exception as e: raise RetrievalError(f"Video embedding IPC failed: {e}") from e
+
     def close(self):
         if getattr(self, "process", None) is None:
             return

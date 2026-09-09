@@ -20,6 +20,7 @@ def main():
         from .config import RetrievalConfig
         from .qwen_encoder import QwenEncoder, implementation_hash
         from .qwen_joint_encoder import QwenJointEncoder, implementation_hash as joint_implementation_hash
+        from .qwen_video_encoder import QwenVideoEncoder, implementation_hash as video_implementation_hash
         cfg = RetrievalConfig(**json.loads(sys.stdin.readline()))
         cfg.validate()
         model_hashes = {}
@@ -31,8 +32,9 @@ def main():
                         h.update(block)
                 model_hashes[path.name] = h.hexdigest()
         joint = cfg.strategy in ("qwen_state_text", "qwen_history_state")
-        encoder = QwenJointEncoder(cfg) if joint else QwenEncoder(cfg)
-        active_hash = joint_implementation_hash() if joint else implementation_hash()
+        video = cfg.strategy in ("qwen_video", "qwen_video_late_fusion")
+        encoder = QwenJointEncoder(cfg) if joint else (QwenVideoEncoder(cfg) if video else QwenEncoder(cfg))
+        active_hash = joint_implementation_hash() if joint else (video_implementation_hash() if video else implementation_hash())
     def send(value):
         protocol.write(json.dumps(value) + "\n")
         protocol.flush()
@@ -47,15 +49,16 @@ def main():
             break
         try:
             started = time.perf_counter()
-            frames = [np.array(Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB"))
-                      for x in request["images"]]
-            with contextlib.redirect_stdout(sys.stderr):
-                if joint:
-                    embeddings = encoder.encode(frames, request.get("texts"))
-                else:
-                    if request.get("texts") is not None:
-                        raise ValueError("Image-only worker does not accept state text")
-                    embeddings = encoder.encode(frames)
+            if video:
+                videos = [[np.array(Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB")) for x in clip] for clip in request["videos"]]
+                with contextlib.redirect_stdout(sys.stderr): embeddings = encoder.encode(videos)
+            else:
+                frames = [np.array(Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB")) for x in request["images"]]
+                with contextlib.redirect_stdout(sys.stderr):
+                    if joint: embeddings = encoder.encode(frames, request.get("texts"))
+                    else:
+                        if request.get("texts") is not None: raise ValueError("Image-only worker does not accept state text")
+                        embeddings = encoder.encode(frames)
             send({"id": request["id"], "embeddings": embeddings.tolist(),
                   "encoding_seconds": time.perf_counter() - started,
                   "peak_allocated_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0})

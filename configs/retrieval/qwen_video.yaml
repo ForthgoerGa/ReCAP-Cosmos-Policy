@@ -1,0 +1,11 @@
+strategy: qwen_video
+model_path: ${QWEN_MODEL_PATH}
+model_revision: ${QWEN_MODEL_REVISION}
+worker_python: ${QWEN_PYTHON}
+index_path: ${QWEN_VIDEO_INDEX_PATH}
+candidate_k: 1
+image_size: 224
+embedding_dim: 2048
+batch_size: 8
+timeout_seconds: 300
+instruction: Represent this causal PushT demonstration video window for matching the current scene and motion.

@@ -248,9 +248,9 @@ class PolicyEvalConfig:
 
 
 def validate_config(cfg: PolicyEvalConfig) -> None:
-    if cfg.retrieval_strategy not in ("standard", "consistent", "cumulative", "qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion"):
+    if cfg.retrieval_strategy not in ("standard", "consistent", "cumulative", "qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion"):
         raise ValueError(f"Unknown retrieval strategy: {cfg.retrieval_strategy}")
-    if cfg.retrieval_strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion") and not cfg.retrieval_config:
+    if cfg.retrieval_strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion") and not cfg.retrieval_config:
         raise ValueError("Qwen retrieval requires retrieval_config")
     assert cfg.visual_config in VISUAL_CONFIGS, (
         f"Unknown visual_config '{cfg.visual_config}'. "
@@ -409,10 +409,10 @@ def run_episode(
                 extra = {}
                 if cfg.retrieval_strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_late_fusion"):
                     extra["primary_image"] = frame
-                if cfg.retrieval_strategy in ("qwen_state_text", "qwen_history_state", "qwen_late_fusion"):
+                if cfg.retrieval_strategy in ("qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion"):
                     extra["state_history"] = np.asarray(state_history)
                     extra["primary_image"] = frame
-                if cfg.retrieval_strategy == "qwen_history_state":
+                if cfg.retrieval_strategy in ("qwen_history_state", "qwen_video", "qwen_video_late_fusion"):
                     extra["primary_images"] = list(image_history)
                 ret_frames, ret_actions, ret_proprio = retrieval.get_retrieved_data(
                     agent_pos=agent_pos,
@@ -568,6 +568,20 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
             ret_context_multiplier=cfg.ret_context_multiplier,
             ret_image_subsample=cfg.ret_image_subsample,
             retrieval_config=cfg.retrieval_config,
+        )
+    elif cfg.retrieval_strategy == "qwen_video_late_fusion":
+        from .retrievers.qwen_video import QwenVideoLateFusionRetrieval
+        retrieval = QwenVideoLateFusionRetrieval(
+            cfg.retrieval_data_dir, split=retrieval_split, retrieval_config=cfg.retrieval_config,
+            chunk_size=cfg.chunk_size, block_rel=cfg.block_rel,
+            ret_context_multiplier=cfg.ret_context_multiplier, ret_image_subsample=cfg.ret_image_subsample
+        )
+    elif cfg.retrieval_strategy == "qwen_video":
+        from .retrievers.qwen_video import QwenVideoRetrieval
+        retrieval = QwenVideoRetrieval(
+            cfg.retrieval_data_dir, split=retrieval_split, retrieval_config=cfg.retrieval_config,
+            chunk_size=cfg.chunk_size, block_rel=cfg.block_rel,
+            ret_context_multiplier=cfg.ret_context_multiplier, ret_image_subsample=cfg.ret_image_subsample
         )
     elif cfg.retrieval_strategy == "qwen_full":
         from .retrievers.qwen_full import QwenFullRetrieval
