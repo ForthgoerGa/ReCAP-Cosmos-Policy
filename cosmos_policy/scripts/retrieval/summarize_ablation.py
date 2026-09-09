@@ -34,7 +34,7 @@ def summarize(root):
         if (out / "episodes.jsonl").exists():
             episodes = [json.loads(line) for line in (out / "episodes.jsonl").read_text().splitlines()]
         timings = [r["total_retrieval_seconds"] for r in rows]
-        ranks = [r["selected_state_rank"] for r in rows]
+        ranks = [r["selected_state_rank"] for r in rows if r.get("selected_state_rank") is not None]
         results.append({
             "directory": str(out), "status": manifest["status"], "episodes": episodes,
             "success_rate": sum(e["success"] for e in episodes) / len(episodes) if episodes else None,

@@ -1,0 +1,13 @@
+strategy: qwen_state_text
+model_path: ${QWEN_MODEL_PATH}
+model_revision: ${QWEN_MODEL_REVISION}
+worker_python: ${QWEN_PYTHON}
+index_path: ${QWEN_STATE_INDEX_PATH}
+candidate_k: 1
+image_size: 224
+embedding_dim: 2048
+batch_size: 8
+timeout_seconds: 300
+history_length: 1
+history_weight_power: 1.0
+instruction: Represent the PushT scene and the supplied simulator state for matching demonstrations.

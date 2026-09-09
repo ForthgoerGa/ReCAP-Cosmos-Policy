@@ -54,7 +54,8 @@ def main():
         if args.candidate_k is not None:
             cfg.candidate_k = args.candidate_k
             cfg.validate()
-        out = root / f"{idx:02d}_{cfg.strategy}_k{cfg.candidate_k}"
+        suffix = "all_top1" if cfg.strategy in ("qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion") else f"k{cfg.candidate_k}"
+        out = root / f"{idx:02d}_{cfg.strategy}_{suffix}"
         out.mkdir()
         resolved = out / "retrieval_config.yaml"
         resolved.write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False))

@@ -118,10 +118,20 @@ Qwen peak allocated bytes cover the worker's PyTorch allocations.
 Fatal index/worker/encoding errors invalidate the run, with a nonzero exit status; there is no
 automatic state-only fallback. The smoke launcher also makes other episode exceptions fatal.
 
+## New multimodal ablations
+
+Three additional independent backends are available; their full design and usage are in [qwen_multimodal_retrieval.md](qwen_multimodal_retrieval.md):
+
+- `qwen_state_text`: single RGB image plus canonical simulator state text in one Qwen input.
+- `qwen_history_state`: causal t-7..t joint image/state embeddings, weighted 1..8 and pooled.
+- `qwen_late_fusion`: image-only cosine and full-pool geometric state score fused with YAML `alpha`/`beta`.
+
+The old backends remain available. Joint modes use `build_qwen_multimodal_index`; late fusion reuses the image-only index.
+
 ## Future ablations
 
 Vary `candidate_k` through YAML or the launcher override, while reusing the same index.
-Future score fusion or pure visual selection should get separate backend/config names.
+Full-pool visual top-1 is available as `qwen_full`; see [its guide](qwen_full_retrieval.md). Future score fusion should use a separate backend/config name.
 Video embedding requires a separately versioned historical-window index and causal query history.
 Neither temporal penalties nor smoothing is present in v1.
 
@@ -135,5 +145,6 @@ Neither temporal penalties nor smoothing is present in v1.
 模型路径、固定版本、worker Python、索引路径通过运行环境变量指定。
 编码指令或预处理改变后必须重新建索引，不能复用旧向量。
 
-后续融合分数、纯图像全池检索、历史视频检索分别建立新策略与配置；
+纯图像全池检索已作为独立 qwen_full 策略接入，见 qwen_full_retrieval.md。
+后续融合分数、历史视频检索分别建立新策略与配置；
 它们继续复用候选来源映射、实验入口和日志汇总，不通过复制整个 eval 脚本实现。

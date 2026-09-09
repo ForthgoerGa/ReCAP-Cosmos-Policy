@@ -19,6 +19,7 @@ def main():
         from PIL import Image
         from .config import RetrievalConfig
         from .qwen_encoder import QwenEncoder, implementation_hash
+        from .qwen_joint_encoder import QwenJointEncoder, implementation_hash as joint_implementation_hash
         cfg = RetrievalConfig(**json.loads(sys.stdin.readline()))
         cfg.validate()
         model_hashes = {}
@@ -29,11 +30,13 @@ def main():
                     for block in iter(lambda: f.read(8 * 1024 * 1024), b""):
                         h.update(block)
                 model_hashes[path.name] = h.hexdigest()
-        encoder = QwenEncoder(cfg)
+        joint = cfg.strategy in ("qwen_state_text", "qwen_history_state")
+        encoder = QwenJointEncoder(cfg) if joint else QwenEncoder(cfg)
+        active_hash = joint_implementation_hash() if joint else implementation_hash()
     def send(value):
         protocol.write(json.dumps(value) + "\n")
         protocol.flush()
-    send({"ready": True, "implementation_hash": implementation_hash(),
+    send({"ready": True, "implementation_hash": active_hash,
           "model_hashes": model_hashes,
           "versions": {name: version(name) for name in
                        ("torch", "transformers", "qwen-vl-utils", "pillow")},
@@ -47,7 +50,12 @@ def main():
             frames = [np.array(Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB"))
                       for x in request["images"]]
             with contextlib.redirect_stdout(sys.stderr):
-                embeddings = encoder.encode(frames)
+                if joint:
+                    embeddings = encoder.encode(frames, request.get("texts"))
+                else:
+                    if request.get("texts") is not None:
+                        raise ValueError("Image-only worker does not accept state text")
+                    embeddings = encoder.encode(frames)
             send({"id": request["id"], "embeddings": embeddings.tolist(),
                   "encoding_seconds": time.perf_counter() - started,
                   "peak_allocated_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0})

@@ -62,7 +62,7 @@ class QwenClient:
         except queue.Empty as e:
             raise RetrievalError("Qwen worker timeout: " + "\n".join(self.stderr_tail)) from e
 
-    def encode(self, frames):
+    def encode(self, frames, texts=None):
         started = time.perf_counter()
         try:
             images = []
@@ -73,7 +73,12 @@ class QwenClient:
                 Image.fromarray(frame).save(buf, format="PNG")
                 images.append(base64.b64encode(buf.getvalue()).decode())
             self.counter += 1
-            self.process.stdin.write(json.dumps({"id": self.counter, "images": images}) + "\n")
+            request = {"id": self.counter, "images": images}
+            if texts is not None:
+                if len(texts) != len(frames):
+                    raise ValueError("texts and frames must have equal length")
+                request["texts"] = [str(x) for x in texts]
+            self.process.stdin.write(json.dumps(request) + "\n")
             self.process.stdin.flush()
             result = self._receive()
             values = np.asarray(result["embeddings"], dtype=np.float32)

@@ -21,7 +21,7 @@
 cosmos_policy/experiments/robot/pusht_ret/run_eval.py
 
 Evaluates a retrieval-augmented Cosmos Policy on PushT.
-Uses gt pose (block_pos, agent_pos, block_angle) for 10-dim state retrieval.
+Supports GT state retrieval, Qwen image reranking, and full-pool Qwen image retrieval.
 No perception models (SAM3 / CoTracker) needed.
 
 Usage:
@@ -223,7 +223,7 @@ class PolicyEvalConfig:
     retrieval_pool_split: Optional[str] = None       # explicit comma-separated dir names, e.g. "rot30_0,rot30_1,rot60_0"
     retrieval_pool_k: int = 2                        # K nearest rot pools when goal_angle is set
     retrieval_pool_pattern: str = "plain"            # "plain" | "flipcolor" | "both"
-    retrieval_strategy: str = "standard"  # "standard", "consistent", or "cumulative"
+    retrieval_strategy: str = "standard"  # standard / consistent / cumulative / qwen_rerank / qwen_full
     retrieval_config: str = ""  # YAML for optional retrieval backend
     retrieval_trace: bool = False
     fail_on_episode_error: bool = False
@@ -248,9 +248,9 @@ class PolicyEvalConfig:
 
 
 def validate_config(cfg: PolicyEvalConfig) -> None:
-    if cfg.retrieval_strategy not in ("standard", "consistent", "cumulative", "qwen_rerank"):
+    if cfg.retrieval_strategy not in ("standard", "consistent", "cumulative", "qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion"):
         raise ValueError(f"Unknown retrieval strategy: {cfg.retrieval_strategy}")
-    if cfg.retrieval_strategy == "qwen_rerank" and not cfg.retrieval_config:
+    if cfg.retrieval_strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion") and not cfg.retrieval_config:
         raise ValueError("Qwen retrieval requires retrieval_config")
     assert cfg.visual_config in VISUAL_CONFIGS, (
         f"Unknown visual_config '{cfg.visual_config}'. "
@@ -375,6 +375,8 @@ def run_episode(
     future_image_predictions_list = []
     chunk_future_preds = []
     chunk_ret_frames = []
+    image_history = deque(maxlen=8)
+    state_history = deque(maxlen=10)
     success = False
     coverage = 0.0
 
@@ -387,6 +389,7 @@ def run_episode(
             observation = prepare_observation(obs)
             frame = observation["primary_image"]
             replay_frames.append(frame.copy())
+            image_history.append(frame.copy())
 
             # Collect gt pose every timestep for velocity history
             unwrapped   = env.unwrapped
@@ -394,6 +397,7 @@ def run_episode(
             agent_pos   = observation["proprio"].copy()
             block_pos_history.append(block_pos)
             agent_pos_history.append(agent_pos)
+            state_history.append(np.concatenate([agent_pos, block_pos, [float(unwrapped.block.angle)]]).astype(np.float32))
 
             if len(action_queue) == 0:
                 block_angle = float(unwrapped.block.angle)
@@ -402,7 +406,14 @@ def run_episode(
                 aph = np.array(agent_pos_history) if len(agent_pos_history) >= 2 else None
 
                 retrieval_started = time.perf_counter()
-                extra = {"primary_image": frame} if cfg.retrieval_strategy == "qwen_rerank" else {}
+                extra = {}
+                if cfg.retrieval_strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_late_fusion"):
+                    extra["primary_image"] = frame
+                if cfg.retrieval_strategy in ("qwen_state_text", "qwen_history_state", "qwen_late_fusion"):
+                    extra["state_history"] = np.asarray(state_history)
+                    extra["primary_image"] = frame
+                if cfg.retrieval_strategy == "qwen_history_state":
+                    extra["primary_images"] = list(image_history)
                 ret_frames, ret_actions, ret_proprio = retrieval.get_retrieved_data(
                     agent_pos=agent_pos,
                     block_pos=block_pos,
@@ -536,7 +547,20 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
         pool_pattern=cfg.retrieval_pool_pattern,
     )
     log_message(f"Retrieval: strategy='{cfg.retrieval_strategy}', split='{retrieval_split}'", log_file)
-    if cfg.retrieval_strategy == "qwen_rerank":
+    if cfg.retrieval_strategy in ("qwen_state_text", "qwen_history_state"):
+        from .retrievers.qwen_multimodal import QwenStateTextRetrieval, QwenHistoryStateRetrieval
+        cls = QwenStateTextRetrieval if cfg.retrieval_strategy == "qwen_state_text" else QwenHistoryStateRetrieval
+        retrieval = cls(
+            data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size, split=retrieval_split,
+            block_rel=cfg.block_rel, ret_context_multiplier=cfg.ret_context_multiplier,
+            ret_image_subsample=cfg.ret_image_subsample, retrieval_config=cfg.retrieval_config)
+    elif cfg.retrieval_strategy == "qwen_late_fusion":
+        from .retrievers.qwen_late_fusion import QwenLateFusionRetrieval
+        retrieval = QwenLateFusionRetrieval(
+            data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size, split=retrieval_split,
+            block_rel=cfg.block_rel, ret_context_multiplier=cfg.ret_context_multiplier,
+            ret_image_subsample=cfg.ret_image_subsample, retrieval_config=cfg.retrieval_config)
+    elif cfg.retrieval_strategy == "qwen_rerank":
         from .retrievers.qwen_rerank import QwenRerankRetrieval
         retrieval = QwenRerankRetrieval(
             data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size,
@@ -544,6 +568,13 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
             ret_context_multiplier=cfg.ret_context_multiplier,
             ret_image_subsample=cfg.ret_image_subsample,
             retrieval_config=cfg.retrieval_config,
+        )
+    elif cfg.retrieval_strategy == "qwen_full":
+        from .retrievers.qwen_full import QwenFullRetrieval
+        retrieval = QwenFullRetrieval(
+            cfg.retrieval_data_dir, split=retrieval_split, block_rel=cfg.block_rel,
+            ret_context_multiplier=cfg.ret_context_multiplier, ret_image_subsample=cfg.ret_image_subsample,
+            chunk_size=cfg.chunk_size, retrieval_config=cfg.retrieval_config
         )
     elif cfg.retrieval_strategy == "consistent":
         retrieval = PushTConsistentRetrieval(

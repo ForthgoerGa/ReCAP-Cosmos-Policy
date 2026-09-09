@@ -323,6 +323,7 @@ class PushTRetrieval:
 
                     # Load GT states: [agent_x, agent_y, block_x, block_y, block_angle]
                     states = grp["obs/states"][:].astype(np.float32)
+                    self._base_data[(suite, demo_key)]["states"] = states[:, :5]
                     T = len(states)
                     agent_pos_seq = states[:, :2]    # (T, 2) agent (x, y)
                     block_pos_seq = states[:, 2:4]   # (T, 2) block (x, y)

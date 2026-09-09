@@ -19,6 +19,9 @@ def main():
     p.add_argument("--split", default="base_0,base_1,base_2,base_3,base_4")
     args = p.parse_args()
     cfg = load_config(args.retrieval_config)
+    if cfg.strategy in ("qwen_state_text", "qwen_history_state"):
+        from .build_qwen_multimodal_index import build
+        return build(cfg, args.data_dir, args.split.split(","))
     out = Path(cfg.index_path)
     out.mkdir(parents=True, exist_ok=False)
     pool = PushTRetrieval(args.data_dir, split=args.split.split(","))
