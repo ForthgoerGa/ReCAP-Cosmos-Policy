@@ -1,0 +1,8 @@
+strategy: wan_vae_image
+model_path: ${WAN_VAE_PATH}
+model_revision: 38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981
+index_path: ${WAN_IMAGE_INDEX_PATH}
+candidate_k: 1
+image_size: 224
+embedding_dim: 12544
+batch_size: 8

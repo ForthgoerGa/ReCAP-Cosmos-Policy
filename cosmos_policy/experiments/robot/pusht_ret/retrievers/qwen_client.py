@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import os
+from pathlib import Path
 import queue
 import subprocess
 import threading
@@ -16,14 +17,14 @@ from .config import RetrievalError
 
 
 class QwenClient:
-    def __init__(self, cfg):
+    def __init__(self, cfg, worker_module=None):
         self.cfg = cfg
         self.counter = 0
         self.responses = queue.Queue()
         self.stderr_tail = []
         self.process = subprocess.Popen(
             [cfg.worker_python, "-u", "-m",
-             "cosmos_policy.experiments.robot.pusht_ret.retrievers.qwen_worker"],
+             worker_module or "cosmos_policy.experiments.robot.pusht_ret.retrievers.qwen_worker"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, env={**os.environ, "TOKENIZERS_PARALLELISM": "false",
                                      "HF_HUB_OFFLINE": "1"})
@@ -39,16 +40,30 @@ class QwenClient:
         threading.Thread(target=reader, daemon=True).start()
         threading.Thread(target=stderr_reader, daemon=True).start()
         try:
+            self._resource_role = 'reranker' if worker_module and 'pair_worker' in worker_module else 'embedding'
+            self._register_resources()
             self.process.stdin.write(json.dumps(cfg.to_dict()) + "\n")
             self.process.stdin.flush()
             self.metadata = self._receive()
             if not self.metadata.get("ready"):
                 raise RetrievalError("Qwen worker failed readiness check")
+            self._register_resources(self.metadata)
         except Exception as e:
             self.close()
             if isinstance(e, RetrievalError):
                 raise
             raise RetrievalError(f"Worker initialization failed: {e}") from e
+
+    def _register_resources(self, metadata=None):
+        filename = os.environ.get('RECAP_RESOURCE_FILE')
+        if not filename:
+            return
+        path = Path(filename)
+        record = json.loads(path.read_text()) if path.exists() else {'policy_pid': os.getpid(), 'workers': {}}
+        record['workers'][self._resource_role] = {'pid': self.process.pid, 'metadata': metadata}
+        tmp = path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(record, indent=2))
+        tmp.replace(path)
 
     def _receive(self):
         try:
@@ -94,7 +109,7 @@ class QwenClient:
         except Exception as e:
             raise RetrievalError(f"Embedding IPC failed: {e}") from e
 
-    def encode_video(self, videos):
+    def encode_video(self, videos, texts=None):
         started = time.perf_counter()
         try:
             encoded = []
@@ -106,34 +121,12 @@ class QwenClient:
                     buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG")
                     clip.append(base64.b64encode(buf.getvalue()).decode())
                 encoded.append(clip)
+            if texts is not None and len(texts) != len(videos):
+                raise ValueError("texts and videos must have equal length")
             self.counter += 1
-            self.process.stdin.write(json.dumps({"id": self.counter, "videos": encoded}) + "\n")
-            self.process.stdin.flush()
-            result = self._receive()
-            values = np.asarray(result["embeddings"], dtype=np.float32)
-            if result["id"] != self.counter or values.shape != (len(videos), self.cfg.embedding_dim):
-                raise ValueError("Worker response mismatch")
-            if not np.isfinite(values).all() or not np.allclose(np.linalg.norm(values, axis=1), 1, atol=1e-5):
-                raise ValueError("Invalid normalized embeddings")
-            result.pop("embeddings"); result["roundtrip_seconds"] = time.perf_counter() - started
-            return values, result
-        except RetrievalError: raise
-        except Exception as e: raise RetrievalError(f"Video embedding IPC failed: {e}") from e
-
-    def encode_video(self, videos):
-        started = time.perf_counter()
-        try:
-            encoded = []
-            for frames in videos:
-                clip = []
-                for frame in frames:
-                    if frame.dtype != np.uint8 or frame.ndim != 3 or frame.shape[-1] != 3:
-                        raise ValueError("Expected uint8 RGB")
-                    buf = io.BytesIO(); Image.fromarray(frame).save(buf, format="PNG")
-                    clip.append(base64.b64encode(buf.getvalue()).decode())
-                encoded.append(clip)
-            self.counter += 1
-            self.process.stdin.write(json.dumps({"id": self.counter, "videos": encoded}) + "\n")
+            request = {"id": self.counter, "videos": encoded}
+            if texts is not None: request["texts"] = [str(x) for x in texts]
+            self.process.stdin.write(json.dumps(request) + "\n")
             self.process.stdin.flush()
             result = self._receive()
             values = np.asarray(result["embeddings"], dtype=np.float32)

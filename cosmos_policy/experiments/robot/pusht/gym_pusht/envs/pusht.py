@@ -318,14 +318,14 @@ class PushTEnv(gym.Env):
 
         return observation, info
 
-    def _draw(self):
+    def _draw(self, draw_options_factory=DrawOptions):
         # Create a screen
         screen = pygame.Surface((512, 512))
         background_color = (255, 255, 255)  # white
         if type(self.options) == dict and self.options.get('background_color') is not None:
             background_color = self.options.get('background_color')
         screen.fill(background_color)
-        draw_options = DrawOptions(screen)
+        draw_options = draw_options_factory(screen)
 
         # Draw goal pose
         goal_body = self.get_goal_pose_body(self.goal_pose)

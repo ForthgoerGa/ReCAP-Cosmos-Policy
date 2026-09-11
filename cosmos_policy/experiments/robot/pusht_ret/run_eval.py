@@ -77,6 +77,7 @@ from cosmos_policy.experiments.robot.robot_utils import (
 from cosmos_policy.utils.utils import set_seed_everywhere
 
 from .retrievers.config import RetrievalError
+from .retrievers.query_visual import QUERY_VISUAL_MODES, retrieval_query_frame
 from .retrieval import PushTRetrieval, resolve_retrieval_split
 from .retrieval_consistent import PushTConsistentRetrieval
 from .retrieval_cumulative import PushTCumulativeRetrieval
@@ -226,6 +227,7 @@ class PolicyEvalConfig:
     retrieval_strategy: str = "standard"  # standard / consistent / cumulative / qwen_rerank / qwen_full
     retrieval_config: str = ""  # YAML for optional retrieval backend
     retrieval_trace: bool = False
+    retrieval_query_visual: str = "none"  # query-only; policy and physics stay unchanged
     fail_on_episode_error: bool = False
     ret_top_n: int = 3               # consistent/cumulative: number of diverse tracks
     ret_dist_threshold: float = 0.3  # consistent: re-retrieve when dist² > this
@@ -248,10 +250,14 @@ class PolicyEvalConfig:
 
 
 def validate_config(cfg: PolicyEvalConfig) -> None:
-    if cfg.retrieval_strategy not in ("standard", "consistent", "cumulative", "qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion"):
+    if cfg.retrieval_query_visual not in QUERY_VISUAL_MODES:
+        raise ValueError(f"Unknown query visual mode: {cfg.retrieval_query_visual}")
+    if cfg.retrieval_query_visual != "none" and not cfg.retrieval_strategy.startswith(("qwen_", "wan_vae_")):
+        raise ValueError("Query visual normalization requires visual retrieval")
+    if cfg.retrieval_strategy not in ("standard", "consistent", "cumulative", "qwen_rerank", "qwen_two_stage", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion", "qwen_video_agent_state", "wan_vae_image", "wan_vae_video"):
         raise ValueError(f"Unknown retrieval strategy: {cfg.retrieval_strategy}")
-    if cfg.retrieval_strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion") and not cfg.retrieval_config:
-        raise ValueError("Qwen retrieval requires retrieval_config")
+    if cfg.retrieval_strategy.startswith(("qwen_", "wan_vae_")) and not cfg.retrieval_config:
+        raise ValueError("Visual retrieval requires retrieval_config")
     assert cfg.visual_config in VISUAL_CONFIGS, (
         f"Unknown visual_config '{cfg.visual_config}'. "
         f"Choose from: {list(VISUAL_CONFIGS.keys())}"
@@ -389,7 +395,10 @@ def run_episode(
             observation = prepare_observation(obs)
             frame = observation["primary_image"]
             replay_frames.append(frame.copy())
-            image_history.append(frame.copy())
+            query_visual_started = time.perf_counter()
+            query_frame = retrieval_query_frame(env, frame, cfg.retrieval_query_visual)
+            query_visual_seconds = time.perf_counter() - query_visual_started
+            image_history.append(query_frame.copy())
 
             # Collect gt pose every timestep for velocity history
             unwrapped   = env.unwrapped
@@ -407,12 +416,12 @@ def run_episode(
 
                 retrieval_started = time.perf_counter()
                 extra = {}
-                if cfg.retrieval_strategy in ("qwen_rerank", "qwen_full", "qwen_state_text", "qwen_late_fusion"):
-                    extra["primary_image"] = frame
-                if cfg.retrieval_strategy in ("qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion"):
+                if cfg.retrieval_strategy in ("qwen_rerank", "qwen_two_stage", "qwen_full", "qwen_state_text", "qwen_late_fusion", "wan_vae_image", "wan_vae_video"):
+                    extra["primary_image"] = query_frame
+                if cfg.retrieval_strategy in ("qwen_state_text", "qwen_history_state", "qwen_late_fusion", "qwen_video", "qwen_video_late_fusion", "qwen_video_agent_state"):
                     extra["state_history"] = np.asarray(state_history)
-                    extra["primary_image"] = frame
-                if cfg.retrieval_strategy in ("qwen_history_state", "qwen_video", "qwen_video_late_fusion"):
+                    extra["primary_image"] = query_frame
+                if cfg.retrieval_strategy in ("qwen_history_state", "qwen_video", "qwen_video_late_fusion", "qwen_video_agent_state", "wan_vae_video"):
                     extra["primary_images"] = list(image_history)
                 ret_frames, ret_actions, ret_proprio = retrieval.get_retrieved_data(
                     agent_pos=agent_pos,
@@ -422,8 +431,18 @@ def run_episode(
                     agent_pos_history=aph,
                     **extra,
                 )
+                retrieval_call_seconds = time.perf_counter() - retrieval_started
                 if cfg.retrieval_trace:
                     record = dict(retrieval.last_result or {})
+                    record.update(
+                        retrieval_query_visual=cfg.retrieval_query_visual,
+                        query_visual_seconds=query_visual_seconds,
+                        retrieval_call_seconds=retrieval_call_seconds,
+                        retrieval_module_seconds=query_visual_seconds + retrieval_call_seconds,
+                        policy_frame_sha256=hashlib.sha256(frame.tobytes()).hexdigest(),
+                        query_frame_sha256=hashlib.sha256(query_frame.tobytes()).hexdigest(),
+                        query_history_sha256=[hashlib.sha256(f.tobytes()).hexdigest() for f in image_history],
+                    )
                     record.update(episode=episode_idx, seed=cfg.seed + episode_idx, step=t,
                                   total_retrieval_seconds=time.perf_counter() - retrieval_started,
                                   frame_sha256=hashlib.sha256(ret_frames.tobytes()).hexdigest(),
@@ -554,9 +573,21 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
             data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size, split=retrieval_split,
             block_rel=cfg.block_rel, ret_context_multiplier=cfg.ret_context_multiplier,
             ret_image_subsample=cfg.ret_image_subsample, retrieval_config=cfg.retrieval_config)
+    elif cfg.retrieval_strategy in ("wan_vae_image", "wan_vae_video"):
+        from .retrievers.wan_vae import WanVAERetrieval
+        retrieval = WanVAERetrieval(
+            data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size, split=retrieval_split,
+            block_rel=cfg.block_rel, ret_context_multiplier=cfg.ret_context_multiplier,
+            ret_image_subsample=cfg.ret_image_subsample, retrieval_config=cfg.retrieval_config)
     elif cfg.retrieval_strategy == "qwen_late_fusion":
         from .retrievers.qwen_late_fusion import QwenLateFusionRetrieval
         retrieval = QwenLateFusionRetrieval(
+            data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size, split=retrieval_split,
+            block_rel=cfg.block_rel, ret_context_multiplier=cfg.ret_context_multiplier,
+            ret_image_subsample=cfg.ret_image_subsample, retrieval_config=cfg.retrieval_config)
+    elif cfg.retrieval_strategy == "qwen_two_stage":
+        from .retrievers.qwen_two_stage import QwenTwoStageRetrieval
+        retrieval = QwenTwoStageRetrieval(
             data_dir=cfg.retrieval_data_dir, chunk_size=cfg.chunk_size, split=retrieval_split,
             block_rel=cfg.block_rel, ret_context_multiplier=cfg.ret_context_multiplier,
             ret_image_subsample=cfg.ret_image_subsample, retrieval_config=cfg.retrieval_config)
@@ -568,6 +599,13 @@ def eval_pusht_ret(cfg: PolicyEvalConfig) -> None:
             ret_context_multiplier=cfg.ret_context_multiplier,
             ret_image_subsample=cfg.ret_image_subsample,
             retrieval_config=cfg.retrieval_config,
+        )
+    elif cfg.retrieval_strategy == "qwen_video_agent_state":
+        from .retrievers.qwen_video import QwenVideoAgentStateRetrieval
+        retrieval = QwenVideoAgentStateRetrieval(
+            cfg.retrieval_data_dir, split=retrieval_split, retrieval_config=cfg.retrieval_config,
+            chunk_size=cfg.chunk_size, block_rel=cfg.block_rel,
+            ret_context_multiplier=cfg.ret_context_multiplier, ret_image_subsample=cfg.ret_image_subsample
         )
     elif cfg.retrieval_strategy == "qwen_video_late_fusion":
         from .retrievers.qwen_video import QwenVideoLateFusionRetrieval

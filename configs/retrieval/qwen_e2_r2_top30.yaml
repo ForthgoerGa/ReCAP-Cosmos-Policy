@@ -1,0 +1,18 @@
+strategy: qwen_two_stage
+model_path: ${QWEN_MODEL_PATH}
+model_revision: 9f2f7e710d6d81056aa5c0a4f04764fec6bb7bda
+worker_python: ${QWEN_PYTHON}
+index_path: ${QWEN_INDEX_PATH}
+candidate_k: 30
+image_size: 224
+embedding_dim: 2048
+batch_size: 8
+timeout_seconds: 1200
+instruction: Represent the spatial configuration of the pusher, T-shaped block, and
+  target region for matching PushT demonstrations.
+reranker_model_path: ${RERANK2_MODEL_PATH}
+reranker_model_revision: 4bd860ac4f15ad1897a214615cccc700f8f71818
+reranker_batch_size: 30
+reranker_instruction: Retrieve the PushT demonstration image whose pusher position,
+  T-shaped block position and orientation, and target region are most similar to the
+  query image.

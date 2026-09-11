@@ -32,7 +32,7 @@ def main():
                         h.update(block)
                 model_hashes[path.name] = h.hexdigest()
         joint = cfg.strategy in ("qwen_state_text", "qwen_history_state")
-        video = cfg.strategy in ("qwen_video", "qwen_video_late_fusion")
+        video = cfg.strategy in ("qwen_video", "qwen_video_late_fusion", "qwen_video_agent_state")
         encoder = QwenJointEncoder(cfg) if joint else (QwenVideoEncoder(cfg) if video else QwenEncoder(cfg))
         active_hash = joint_implementation_hash() if joint else (video_implementation_hash() if video else implementation_hash())
     def send(value):
@@ -51,7 +51,7 @@ def main():
             started = time.perf_counter()
             if video:
                 videos = [[np.array(Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB")) for x in clip] for clip in request["videos"]]
-                with contextlib.redirect_stdout(sys.stderr): embeddings = encoder.encode(videos)
+                with contextlib.redirect_stdout(sys.stderr): embeddings = encoder.encode(videos, request.get("texts"))
             else:
                 frames = [np.array(Image.open(io.BytesIO(base64.b64decode(x))).convert("RGB")) for x in request["images"]]
                 with contextlib.redirect_stdout(sys.stderr):
@@ -61,7 +61,10 @@ def main():
                         embeddings = encoder.encode(frames)
             send({"id": request["id"], "embeddings": embeddings.tolist(),
                   "encoding_seconds": time.perf_counter() - started,
-                  "peak_allocated_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0})
+                  "peak_allocated_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
+                  "allocated_bytes": torch.cuda.memory_allocated() if torch.cuda.is_available() else 0,
+                  "reserved_bytes": torch.cuda.memory_reserved() if torch.cuda.is_available() else 0,
+                  "peak_reserved_bytes": torch.cuda.max_memory_reserved() if torch.cuda.is_available() else 0})
         except Exception:
             send({"id": request.get("id"), "error": traceback.format_exc()})
             return

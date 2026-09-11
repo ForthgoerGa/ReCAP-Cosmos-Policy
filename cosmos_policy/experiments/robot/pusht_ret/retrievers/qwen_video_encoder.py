@@ -26,9 +26,10 @@ class QwenVideoEncoder:
                 return inputs
         self.cfg=cfg
         self.model=Strict(model_name_or_path=cfg.model_path, torch_dtype=torch.bfloat16, attn_implementation="sdpa", min_pixels=cfg.image_size**2, max_pixels=cfg.image_size**2, max_length=8192)
-    def encode(self, videos):
+    def encode(self, videos, texts=None):
         import torch
         if not videos: raise ValueError("No videos")
+        if texts is not None and len(texts) != len(videos): raise ValueError("texts and videos must have equal length")
         inputs=[]
         for clip in videos:
             if not clip: raise ValueError("Empty video")
@@ -37,7 +38,11 @@ class QwenVideoEncoder:
                 a=np.asarray(frame)
                 if a.dtype!=np.uint8 or a.ndim!=3 or a.shape[-1]!=3: raise ValueError("Expected uint8 RGB")
                 frames.append(Image.fromarray(a).resize((self.cfg.image_size,self.cfg.image_size),Image.Resampling.BICUBIC))
-            inputs.append({"video":frames,"instruction":self.cfg.instruction,"max_frames":len(frames)})
+            item={"video":frames,"instruction":self.cfg.instruction,"max_frames":len(frames)}
+            if texts is not None:
+                if not isinstance(texts[len(inputs)], str) or not texts[len(inputs)].strip(): raise ValueError("Missing state text")
+                item["text"] = texts[len(inputs)]
+            inputs.append(item)
         with torch.inference_mode():
             vals=self.model.process(inputs, normalize=False).float(); vals=torch.nn.functional.normalize(vals,p=2,dim=-1)
         out=vals.cpu().numpy()

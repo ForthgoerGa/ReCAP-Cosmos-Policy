@@ -23,8 +23,8 @@ class QwenFullRetrieval(PushTRetrieval):
     """Retrieve the single best demo frame from the complete Qwen image index."""
     def __init__(self, *args, retrieval_config, **kwargs):
         self.qwen_cfg = load_config(retrieval_config)
-        if self.qwen_cfg.strategy != "qwen_full":
-            raise RetrievalError("QwenFullRetrieval requires strategy=qwen_full")
+        if self.qwen_cfg.strategy not in ("qwen_full", "qwen_two_stage"):
+            raise RetrievalError("QwenFullRetrieval requires a full-pool image strategy")
         if kwargs.get("ret_context_multiplier", 1) != 1 or kwargs.get("ret_image_subsample", 1) != 1:
             raise RetrievalError("qwen_full uses the original 8-frame context without subsampling")
         if kwargs.get("chunk_size", 8) != 8:

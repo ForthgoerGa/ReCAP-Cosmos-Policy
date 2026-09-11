@@ -14,7 +14,7 @@ def identity(pool, cfg):
                 encoder=cfg.encoder_signature(), implementation_hash=implementation_hash())
 
 def build(cfg, data_dir, split, shard_start=0, shard_end=None, shard_out=None):
-    if cfg.strategy != "qwen_video":
+    if cfg.strategy not in ("qwen_video", "qwen_video_agent_state"):
         raise ValueError("Requires qwen_video")
     pool = VideoRetrievalPool(data_dir, split=split)
     metadata = identity(pool, cfg)
@@ -36,7 +36,16 @@ def build(cfg, data_dir, split, shard_start=0, shard_end=None, shard_out=None):
                 sf = pool._subframes[idx]
                 images = pool._base_data[(sf["split"], sf["demo"])]["images"]
                 clips.append(list(images[sf["start"]:sf["t_last"]+1]))
-            values, _ = client.encode_video(clips)
+            if cfg.strategy == "qwen_video_agent_state":
+                texts=[]
+                for idx in range(start, stop):
+                    sf=pool._subframes[idx]; item=pool._base_data[(sf["split"],sf["demo"])]
+                    st=np.asarray(item["states"][:sf["t_last"]+1],dtype=np.float32)
+                    pos=st[-1,:2]/512.0; vel=np.diff(st[-3:,:2]/512.0,axis=0).mean(axis=0) if len(st)>1 else np.zeros(2,np.float32)
+                    texts.append("PushT agent state. Agent position xy=(%.6f, %.6f); agent velocity xy=(%.6f, %.6f). Positions and velocities are normalized by 512." % (*pos,*vel))
+                values, _ = client.encode_video(clips, texts)
+            else:
+                values, _ = client.encode_video(clips)
             vec[start-shard_start:stop-shard_start] = values
             print(f"encoded {stop-shard_start}/{end-shard_start}", flush=True)
         validate_vectors(vec, end-shard_start, cfg.embedding_dim)
