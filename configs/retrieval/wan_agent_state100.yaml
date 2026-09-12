@@ -1,0 +1,11 @@
+strategy: wan_vae_video
+model_path: ${WAN_VAE_PATH}
+model_revision: 38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981
+index_path: ${WAN_VIDEO_INDEX_PATH}
+candidate_k: 1
+image_size: 224
+embedding_dim: 37632
+batch_size: 4
+agent_state_weight: 1.0
+agent_state_index_path: ${WAN_AGENT_STATE_INDEX_PATH}
+visual_cosine_gap: null

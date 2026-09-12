@@ -26,6 +26,9 @@ class RetrievalConfig:
     reranker_model_revision: str = ""
     reranker_batch_size: int = 30
     reranker_instruction: str = "Retrieve the PushT demonstration image whose pusher position, T-shaped block position and orientation, and target region are most similar to the query image."
+    agent_state_weight: float | None = None
+    agent_state_index_path: str = ""
+    visual_cosine_gap: float | None = 0.02
     timeout_seconds: float = 300.0
     alpha: float = 0.5
     beta: float = 0.5
@@ -34,6 +37,12 @@ class RetrievalConfig:
     instruction: str = "Represent the spatial configuration of the pusher, T-shaped block, and target region for matching PushT demonstrations."
 
     def validate(self):
+        if self.agent_state_weight is not None:
+            if self.strategy != "wan_vae_video" or not math.isfinite(self.agent_state_weight) or not 0 <= self.agent_state_weight <= 1:
+                raise ValueError("Agent injection requires Wan video and weight in [0,1]")
+            if not self.agent_state_index_path or (self.visual_cosine_gap is not None and
+                    (not math.isfinite(self.visual_cosine_gap) or not 0 <= self.visual_cosine_gap <= 2)):
+                raise ValueError("Agent injection requires a sidecar and a finite visual guard or null for unrestricted candidates")
         if self.strategy in ("wan_vae_image", "wan_vae_video"):
             temporal = 1 if self.strategy == "wan_vae_image" else 3
             if self.image_size != 224 or self.embedding_dim != 16 * temporal * 28 * 28:
